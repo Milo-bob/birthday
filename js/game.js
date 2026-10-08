@@ -12,7 +12,6 @@
   var startBtn = document.getElementById('start');
   var muteBtn = document.getElementById('mute');
 
-  var fog = document.createElement('canvas'), fctx = fog.getContext('2d');
   var W = 800, H = 450, S = 1, DPR = 1;
   function resize() {
     DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -21,7 +20,6 @@
     canvas.height = Math.round(ph * DPR);
     S = Math.min(pw, ph) / 440;          // Logische Einheiten pro CSS-Pixel
     W = pw / S; H = ph / S;
-    fog.width = canvas.width; fog.height = canvas.height;
     ctx.setTransform(DPR * S, 0, 0, DPR * S, 0, 0);
   }
   window.addEventListener('resize', resize);
@@ -78,7 +76,12 @@
       var f = Math.min(data.distance / 60, 1);
       joy.x = data.vector.x * f; joy.y = -data.vector.y * f;  // nipplejs: y nach oben
     });
-    manager.on('end', function () { joy.x = joy.y = 0; });
+    manager.on('start', function () { aiming = true; });
+    manager.on('end', function () {
+      var l = Math.hypot(joy.x, joy.y);
+      if (l > 0.05) released = { x: joy.x, y: joy.y, power: Math.min(1, l) };
+      aiming = false; joy.x = joy.y = 0;
+    });
   } catch (e) {}
   window.addEventListener('keydown', function (e) { keys[e.key.toLowerCase()] = true; if (e.key.indexOf('Arrow') === 0) e.preventDefault(); });
   window.addEventListener('keyup', function (e) { keys[e.key.toLowerCase()] = false; });
@@ -98,7 +101,7 @@
   var tt = 0;              // Zeit im aktuellen Zustand
   var particles = [], shake = 0, clouds = [];
   var M = null;            // aktuelles Labyrinth
-  var ball, player, candles, litTime, exitPos, visited;
+  var ball, strokes = 0, released = null, aiming = false;
 
   function rnd(a, b) { return a + Math.random() * (b - a); }
   for (var ci = 0; ci < 4; ci++) clouds.push({ x: rnd(0, 800), y: rnd(10, 400), s: rnd(.6, 1.3), v: rnd(4, 10) });
@@ -216,26 +219,48 @@
     state = 'l1'; tt = 0;
   }
   function setupLevel2() {
-    M = genMaze(46, 9, 11);
-    var n = M.cols * M.rows, i;
-    var s = cellCenter(0);
-    player = { x: s.x, y: s.y, vx: 0, vy: 0, face: 1, step: 0 };
-    exitPos = cellCenter(M.goal);
-    visited = []; for (i = 0; i < n; i++) visited[i] = false;
-    candles = []; litTime = 0;
-    var tries = 0;
-    while (candles.length < 4 && tries++ < 200) {
-      var c = (Math.random() * n) | 0;
-      if (c === 0 || c === M.goal) continue;
-      var ok = true, pc = cellCenter(c);
-      candles.forEach(function (k) { if (Math.hypot(k.x - pc.x, k.y - pc.y) < M.cs * 3) ok = false; });
-      if (ok) candles.push({ x: pc.x, y: pc.y });
+    var x0 = 14, y0 = 60, x1 = W - 14, y1 = H - 14, fw = x1 - x0, fh = y1 - y0, t = 12;
+    var portrait = fh > fw;
+    M = { rects: [], x0: x0, y0: y0, x1: x1, y1: y1, mover: null };
+    M.rects.push({ x: x0 - t, y: y0 - t, w: fw + 2 * t, h: t }, { x: x0 - t, y: y1, w: fw + 2 * t, h: t },
+                 { x: x0 - t, y: y0 - t, w: t, h: fh + 2 * t }, { x: x1, y: y0 - t, w: t, h: fh + 2 * t });
+    var off = rnd(-.25, .25) * (portrait ? fw : fh);
+    var sp = portrait ? { x: x0 + fw / 2 - off, y: y1 - 36 } : { x: x0 + 36, y: y0 + fh / 2 - off };
+    var hp = portrait ? { x: x0 + fw / 2 + off, y: y0 + 36 } : { x: x1 - 36, y: y0 + fh / 2 + off };
+    M.start = sp; M.hole = hp;
+    // Zonen, die frei bleiben: Start, Loch, Bahn des beweglichen Balkens
+    var long0 = portrait ? y0 : x0, longLen = portrait ? fh : fw, lat0 = portrait ? x0 : y0, latLen = portrait ? fw : fh;
+    function box(l, la, ll, lw) { return portrait ? { x: la, y: l, w: lw, h: ll } : { x: l, y: la, w: ll, h: lw }; }
+    var mid = long0 + longLen / 2, bw = Math.min(90, latLen * .3), bt = 16;
+    var mv = portrait ? { x: lat0 + 30, y: mid - bt / 2, w: bw, h: bt } : { x: mid - bt / 2, y: lat0 + 30, w: bt, h: bw };
+    M.mover = mv; M.rects.push(mv);
+    mv.axis = portrait ? 'x' : 'y'; mv.lo = lat0 + 30; mv.hi = lat0 + latLen - 30 - bw; mv.dir = 1; mv.speed = 55;
+    var zones = [box(mid - bt / 2 - 6, lat0, bt + 12, latLen)];
+    function free(r) {
+      var pad = 36, ok = true;
+      zones.forEach(function (z) { if (r.x - pad < z.x + z.w && r.x + r.w + pad > z.x && r.y - pad < z.y + z.h && r.y + r.h + pad > z.y) ok = false; });
+      [sp, hp].forEach(function (c) { if (Math.hypot(Math.max(r.x, Math.min(c.x, r.x + r.w)) - c.x, Math.max(r.y, Math.min(c.y, r.y + r.h)) - c.y) < 60) ok = false; });
+      return ok;
     }
+    var tries = 0, placed = 0;
+    while (placed < 4 && tries++ < 300) {
+      var vert = Math.random() < .5, w = vert ? rnd(16, 24) : rnd(46, 90), h = vert ? rnd(46, 90) : rnd(16, 24);
+      var r = { x: rnd(x0 + 30, x1 - 30 - w), y: rnd(y0 + 30, y1 - 30 - h), w: w, h: h };
+      if (!free(r)) continue;
+      M.rects.push(r); zones.push({ x: r.x, y: r.y, w: r.w, h: r.h }); placed++;
+    }
+    ball = { x: sp.x, y: sp.y, vx: 0, vy: 0 };
+    strokes = 0; released = null;
     state = 'l2'; tt = 0;
   }
 
   function start() {
     audio();
+    if (!vid.dataset.primed) {
+      vid.dataset.primed = '1'; vid.preload = 'auto'; vid.muted = true;
+      var pr = vid.play();
+      if (pr && pr.then) pr.then(function () { vid.pause(); vid.currentTime = 0; vid.muted = false; }).catch(function () { vid.muted = false; });
+    }
     overlay.classList.add('hidden'); overlay.style.background = '';
     swingHit = landed = scored = false; trail = []; particles = [];
     setupLevel1();
@@ -271,9 +296,9 @@
       ctx.fillStyle = top; ctx.fillRect(q.x, q.y, q.w, Math.min(2, q.h)); // dünne Lichtkante
     });
   }
-  function drawHud(label) {
+  function drawHud(label, w) {
     ctx.font = '700 18px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    var w = 150;
+    w = w || 150;
     ctx.fillStyle = 'rgba(0,0,0,.4)'; rr(W / 2 - w / 2, 12, w, 32, 16); ctx.fill();
     ctx.fillStyle = '#fff'; ctx.fillText(label, W / 2, 29);
   }
@@ -354,75 +379,70 @@
     drawToast('Bring den Ball ins Loch!', 'Sand bremst, Wasser wirft dich zurück.');
   }
 
-  // ---- Level 2: Dunkles Labyrinth ----
+  // ---- Level 2: Minigolf ----
   function updateL2(dt) {
-    var inp = input();
-    player.vx += (inp.x * 140 - player.vx) * Math.min(1, dt * 12);
-    player.vy += (inp.y * 140 - player.vy) * Math.min(1, dt * 12);
-    player.x += player.vx * dt; player.y += player.vy * dt;
-    collide(player, 9);
-    if (Math.abs(inp.x) > .1) player.face = inp.x > 0 ? 1 : -1;
-    if (Math.hypot(player.vx, player.vy) > 20) player.step += dt * 14;
-    if (litTime > 0) litTime -= dt;
-    var lr = lightRadius();
-    for (var i = 0; i < M.cols * M.rows; i++) {
-      if (visited[i]) continue;
-      var c = cellCenter(i);
-      if (Math.hypot(c.x - player.x, c.y - player.y) < lr * .7) visited[i] = true;
-    }
-    for (var k = candles.length - 1; k >= 0; k--) {
-      if (Math.hypot(player.x - candles[k].x, player.y - candles[k].y) < 16) {
-        burst(candles[k].x, candles[k].y, 16, ['#ffd23f', '#ff9f1c', '#ffffff'], 120);
-        tone(880, 0, .1, 'triangle', .1); tone(1320, .08, .2, 'triangle', .1);
-        candles.splice(k, 1); litTime = 7;
+    var mv = M.mover;
+    mv[mv.axis] += mv.dir * mv.speed * dt;
+    if (mv[mv.axis] > mv.hi) { mv[mv.axis] = mv.hi; mv.dir = -1; }
+    if (mv[mv.axis] < mv.lo) { mv[mv.axis] = mv.lo; mv.dir = 1; }
+    var sp = Math.hypot(ball.vx, ball.vy);
+    if (released) {
+      if (sp < 12 && released.power > .12) {
+        var l = Math.hypot(released.x, released.y), v = 140 + released.power * 460;
+        ball.vx = released.x / l * v; ball.vy = released.y / l * v; strokes++;
+        noise(.08, .35); tone(900, 0, .05, 'square', .08);
       }
+      released = null;
     }
-    if (Math.hypot(player.x - exitPos.x, player.y - exitPos.y) < 16) {
-      burst(exitPos.x, exitPos.y, 40, CONF, 220); tone(784, 0, .15, 'square', .1); tone(1047, .12, .25, 'square', .1);
-      state = 'tee'; tt = 0; fadeIn = 0;
+    sp = Math.hypot(ball.vx, ball.vy);
+    if (sp > 0) {
+      var steps = Math.max(1, Math.ceil(sp * dt / 4)), sdt = dt / steps;
+      for (var i = 0; i < steps; i++) {
+        ball.x += ball.vx * sdt; ball.y += ball.vy * sdt;
+        if (collide(ball, 7)) {
+          var vn = ball.vx * hitN.x + ball.vy * hitN.y;
+          if (vn < 0) {
+            ball.vx -= 1.85 * vn * hitN.x; ball.vy -= 1.85 * vn * hitN.y;
+            if (-vn > 80) tone(260 + Math.random() * 60, 0, .05, 'square', .05);
+          }
+        }
+      }
+      var f = Math.exp(-dt * 1.1); ball.vx *= f; ball.vy *= f;
+      if (Math.hypot(ball.vx, ball.vy) < 10) ball.vx = ball.vy = 0;
+    }
+    var h = M.hole;
+    if (Math.hypot(ball.x - h.x, ball.y - h.y) < 10 && Math.hypot(ball.vx, ball.vy) < 330) {
+      burst(h.x, h.y, 40, CONF, 220); tone(784, 0, .15, 'square', .1); tone(1047, .12, .25, 'square', .1);
+      state = 'tee'; tt = 0;
     }
   }
-  function lightRadius() { return litTime > 0 ? 150 : 85; }
   function drawL2(now) {
-    ctx.fillStyle = '#10241a'; ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = '#2a4a33'; ctx.fillRect(M.ox, M.oy, M.cols * M.cs, M.rows * M.cs);
-    // Ausgang (Tür)
-    var e = exitPos;
-    ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(e.x, e.y - 4, 13, Math.PI, 0); ctx.fillRect(e.x - 13, e.y - 4, 26, 16); ctx.fill();
-    ctx.fillStyle = '#7a4b12'; ctx.beginPath(); ctx.arc(e.x, e.y - 3, 9, Math.PI, 0); ctx.fillRect(e.x - 9, e.y - 3, 18, 15); ctx.fill();
-    ctx.fillStyle = '#ffd23f'; ctx.fillRect(e.x + 3, e.y + 4, 3, 3);
-    drawWalls('#143d22', '#2f7a46');
-    candles.forEach(function (c) {
-      ctx.fillStyle = '#fff4d6'; ctx.fillRect(c.x - 3, c.y - 2, 6, 14);
-      var fl = 1 + Math.sin(now * 12 + c.x) * .15;
-      ctx.fillStyle = '#ff9f1c'; ctx.beginPath(); ctx.ellipse(c.x, c.y - 7, 3.5 * fl, 6 * fl, 0, 0, 7); ctx.fill();
-      ctx.fillStyle = '#ffe066'; ctx.beginPath(); ctx.ellipse(c.x, c.y - 6, 1.6, 3.5 * fl, 0, 0, 7); ctx.fill();
-    });
-    drawGolferTop(player, now, .9);
-
-    // Dunkelheit
-    fctx.setTransform(1, 0, 0, 1, 0, 0);
-    fctx.globalCompositeOperation = 'source-over';
-    fctx.clearRect(0, 0, fog.width, fog.height);
-    fctx.fillStyle = 'rgba(4,7,14,.95)'; fctx.fillRect(0, 0, fog.width, fog.height);
-    fctx.setTransform(DPR * S, 0, 0, DPR * S, 0, 0);
-    fctx.globalCompositeOperation = 'destination-out';
-    fctx.fillStyle = 'rgba(0,0,0,.6)';
-    for (var i = 0; i < visited.length; i++) if (visited[i]) {
-      var c = cellCenter(i); fctx.fillRect(c.x - M.cs / 2, c.y - M.cs / 2, M.cs, M.cs);
+    ctx.fillStyle = '#2f7a3e'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#58b05a'; ctx.fillRect(M.x0, M.y0, M.x1 - M.x0, M.y1 - M.y0);
+    ctx.fillStyle = 'rgba(255,255,255,.07)';
+    for (var yy = M.y0, k = 0; yy < M.y1; yy += 40, k++) if (k % 2) ctx.fillRect(M.x0, yy, M.x1 - M.x0, Math.min(40, M.y1 - yy));
+    var s = M.start, h = M.hole;
+    ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.arc(s.x, s.y, 13, 0, 7); ctx.fill();
+    ctx.fillStyle = '#12301a'; ctx.beginPath(); ctx.arc(h.x, h.y, 11, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(h.x, h.y); ctx.lineTo(h.x, h.y - 30); ctx.stroke();
+    ctx.fillStyle = '#ff595e'; ctx.beginPath(); ctx.moveTo(h.x, h.y - 30); ctx.lineTo(h.x + 16, h.y - 25 + Math.sin(now * 6) * 1.5); ctx.lineTo(h.x, h.y - 20); ctx.fill();
+    drawWalls('#8a5a2b', '#b8844a');
+    // Zielhilfe
+    var stopped = Math.hypot(ball.vx, ball.vy) < 12;
+    if (aiming && stopped) {
+      var jx = joy.x, jy = joy.y, pw = Math.min(1, Math.hypot(jx, jy));
+      if (pw > .02) {
+        var ux = jx / Math.hypot(jx, jy), uy = jy / Math.hypot(jx, jy), len = 24 + pw * 130;
+        ctx.fillStyle = pw > .12 ? '#fff' : 'rgba(255,255,255,.4)';
+        for (var d = 16; d < len; d += 11) { ctx.beginPath(); ctx.arc(ball.x + ux * d, ball.y + uy * d, 2.6, 0, 7); ctx.fill(); }
+        ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(ball.x + ux * len, ball.y + uy * len, 5, 0, 7); ctx.fill();
+      }
     }
-    function glow(x, y, r, a) {
-      var g = fctx.createRadialGradient(x, y, r * .15, x, y, r);
-      g.addColorStop(0, 'rgba(0,0,0,' + a + ')'); g.addColorStop(1, 'rgba(0,0,0,0)');
-      fctx.fillStyle = g; fctx.beginPath(); fctx.arc(x, y, r, 0, 7); fctx.fill();
-    }
-    glow(player.x, player.y, lightRadius() + Math.sin(now * 9) * 1.5, 1);
-    glow(e.x, e.y, 30 + Math.sin(now * 3) * 4, .55);
-    candles.forEach(function (c) { glow(c.x, c.y, 26, .8); });
-    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(fog, 0, 0); ctx.restore();
-
-    drawHud('Level 2 von 2');
-    drawToast('Finde den Ausgang im Dunkeln!', 'Kerzen machen kurz mehr Licht.');
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(ball.x + 2, ball.y + 5, 7, 3.5, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ball.x, ball.y, 7, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ddd'; ctx.beginPath(); ctx.arc(ball.x - 2, ball.y - 2, 1.2, 0, 7); ctx.arc(ball.x + 2, ball.y + 1, 1.2, 0, 7); ctx.fill();
+    drawHud('Level 2 von 2 · Schläge: ' + strokes, 230);
+    drawToast('Joystick ziehen, loslassen = Schlag!', 'Je weiter du ziehst, desto kräftiger.');
   }
   var fadeIn = 0;
 
@@ -523,8 +543,7 @@
       if (!scored && v >= 1) {
         scored = true; state = 'end'; tt = 0;
         for (var i = 0; i < 6; i++) setTimeout(fireworks, i * 350);
-        melody();
-        showEnd();
+        setTimeout(playVideo, 2400);
       }
     }
     return { L: L, theta: theta, tFly: tFly, tRoll: tRoll };
@@ -534,15 +553,32 @@
     burst(rnd(W * .15, W * .85), rnd(H * .1, H * .5), 50, CONF.concat(['#ff9f1c', '#ff70a6']), 230);
     noise(.25, .12); tone(rnd(400, 900), 0, .2, 'sine', .06);
   }
+  var vbox = document.getElementById('vbox'), vid = document.getElementById('vid');
+  var vplay = document.getElementById('vplay'), vskip = document.getElementById('vskip');
+  function playVideo() {
+    if (state !== 'end') return;
+    vbox.classList.remove('hidden'); vplay.classList.add('hidden');
+    vid.muted = muted; vid.currentTime = 0;
+    var p = vid.play();
+    if (p && p.catch) p.catch(function () { vplay.classList.remove('hidden'); });
+  }
+  function endVideo() {
+    if (vbox.classList.contains('hidden')) return;
+    vid.pause(); vbox.classList.add('hidden');
+    if (state !== 'end') return;
+    for (var i = 0; i < 4; i++) setTimeout(fireworks, i * 300);
+    showEnd();
+  }
+  vid.addEventListener('ended', endVideo);
+  vid.addEventListener('error', endVideo);
+  vskip.addEventListener('click', endVideo);
+  vplay.addEventListener('click', function () { vplay.classList.add('hidden'); vid.play().catch(endVideo); });
   function showEnd() {
-    setTimeout(function () {
-      if (state !== 'end') return;
-      titleEl.textContent = 'Happy Birthday ' + NAME + '!';
-      textEl.innerHTML = 'Hole in One! 🏌️⛳<br>Alles Gute zum Geburtstag!';
-      startBtn.textContent = 'Nochmal spielen';
-      overlay.classList.remove('hidden');
-      overlay.style.background = 'rgba(8, 30, 16, .45)';
-    }, 2800);
+    titleEl.textContent = 'Happy Birthday ' + NAME + '!';
+    textEl.innerHTML = 'Hole in One! 🏌️⛳<br>Alles Gute zum Geburtstag!';
+    startBtn.textContent = 'Nochmal spielen';
+    overlay.classList.remove('hidden');
+    overlay.style.background = 'rgba(8, 30, 16, .45)';
   }
 
   // ---- Hauptschleife ----

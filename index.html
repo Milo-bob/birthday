@@ -15,6 +15,11 @@
   #overlay p { margin: 0; font-size: clamp(16px, 3.6vw, 22px); max-width: 520px; line-height: 1.4; opacity: .92; }
   button { font: inherit; font-weight: 700; font-size: 22px; padding: 14px 34px; border: 0; border-radius: 999px; background: #ffd23f; color: #3a2a00; box-shadow: 0 5px 0 #b8941a; cursor: pointer; }
   button:active { transform: translateY(3px); box-shadow: 0 2px 0 #b8941a; }
+  #vbox { position: fixed; inset: 0; z-index: 7; background: #000; display: flex; align-items: center; justify-content: center; }
+  #vbox.hidden, #vbox .hidden { display: none; }
+  #vbox video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #vskip { position: absolute; bottom: calc(14px + env(safe-area-inset-bottom)); right: 14px; font-size: 15px; padding: 8px 18px; background: #ffffff55; color: #fff; box-shadow: none; }
+  #vplay { position: absolute; }
   #mute { position: fixed; top: calc(8px + env(safe-area-inset-top)); right: 8px; z-index: 6; width: 44px; height: 44px; padding: 0; font-size: 20px; border-radius: 50%; background: #ffffffcc; box-shadow: none; }
 </style>
 </head>
@@ -22,9 +27,14 @@
 <canvas id="c"></canvas>
 <div id="zone"></div>
 <button id="mute" aria-label="Ton an/aus">🔊</button>
+<div id="vbox" class="hidden">
+  <video id="vid" playsinline preload="none"><source src="assets/video.mov" type="video/mp4"></video>
+  <button id="vskip">Überspringen</button>
+  <button id="vplay" class="hidden">▶ Video abspielen</button>
+</div>
 <div id="overlay">
   <h1 id="title">Happy Birthday!</h1>
-  <p id="text">Level 1: Rolle den Golfball durchs Labyrinth ins Loch.<br>Level 2: Finde im Dunkeln den Ausgang.<br>Danach folgt dein Abschlag!</p>
+  <p id="text">Level 1: Rolle den Golfball durchs Labyrinth ins Loch.<br>Level 2: Minigolf, zieh den Joystick und lass los zum Schlagen.<br>Danach folgt dein Abschlag!</p>
   <button id="start">Spielen</button>
 </div>
 <script src="js/nipplejs.min.js"></script>
