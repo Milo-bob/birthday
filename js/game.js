@@ -32,7 +32,7 @@
     if (actx && actx.state === 'suspended') actx.resume();
     return actx;
   }
-  function tone(freq, start, dur, type, vol) {
+  function tone(freq, start, dur, type, vol, dest) {
     var a = audio(); if (!a || muted) return;
     var o = a.createOscillator(), g = a.createGain();
     o.type = type || 'triangle'; o.frequency.value = freq;
@@ -40,7 +40,7 @@
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(vol || 0.15, t + 0.02);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(a.destination);
+    o.connect(g); g.connect(dest || a.destination);
     o.start(t); o.stop(t + dur + 0.05);
   }
   function noise(dur, vol) {
@@ -50,15 +50,39 @@
     var s = a.createBufferSource(), g = a.createGain();
     g.gain.value = vol || 0.3; s.buffer = b; s.connect(g); g.connect(a.destination); s.start();
   }
-  var NOTE = { C4: 261.6, D4: 293.7, E4: 329.6, F4: 349.2, G4: 392, A4: 440, B4: 493.9, C5: 523.3 };
-  function melody() {
-    // "Happy Birthday to you" (C-Dur)
-    var m = [['G4', .35], ['G4', .15], ['A4', .5], ['G4', .5], ['C5', .5], ['B4', 1],
-             ['G4', .35], ['G4', .15], ['A4', .5], ['G4', .5], ['D4', .5], ['C5', 1]];
+  var NOTE = { C4: 261.6, D4: 293.7, E4: 329.6, F4: 349.2, G4: 392, A4: 440, B4: 493.9, C5: 523.3,
+               D5: 587.3, E5: 659.3, F5: 698.5, G5: 784 };
+  // "Happy Birthday" (C-Dur), vier Zeilen, läuft in Schleife bis "Nochmal spielen"
+  var SONG = [['G4', .35], ['G4', .15], ['A4', .5], ['G4', .5], ['C5', .5], ['B4', 1],
+              ['G4', .35], ['G4', .15], ['A4', .5], ['G4', .5], ['D5', .5], ['C5', 1],
+              ['G4', .35], ['G4', .15], ['G5', .5], ['E5', .5], ['C5', .5], ['B4', .5], ['A4', 1],
+              ['F5', .35], ['F5', .15], ['E5', .5], ['C5', .5], ['D5', .5], ['C5', 1.4]];
+  var songOn = false, songTimer = 0, songBus = null;
+  function playSongOnce() {
+    var a = audio(); if (!a || !songBus) return 0;
     var t = 0;
-    m.forEach(function (n) { tone(NOTE[n[0]] * (n[0] === 'D4' ? 2 : 1), t, n[1] * 0.9, 'triangle', 0.18); t += n[1]; });
+    SONG.forEach(function (n) { tone(NOTE[n[0]], t, n[1] * 0.92, 'triangle', 0.16, songBus); t += n[1]; });
+    return t;
   }
-  muteBtn.addEventListener('click', function () { muted = !muted; muteBtn.textContent = muted ? '🔇' : '🔊'; });
+  function startSong() {
+    stopSong();
+    var a = audio(); if (!a) return;
+    songOn = true; songBus = a.createGain(); songBus.connect(a.destination);
+    (function loop() {
+      if (!songOn) return;
+      var len = playSongOnce();
+      songTimer = setTimeout(loop, (len + 1.2) * 1000);
+    })();
+  }
+  function stopSong() {
+    songOn = false; clearTimeout(songTimer);
+    if (songBus) { try { songBus.disconnect(); } catch (e) {} songBus = null; }
+  }
+  muteBtn.addEventListener('click', function () {
+    muted = !muted; muteBtn.textContent = muted ? '🔇' : '🔊';
+    if (typeof vid !== 'undefined' && vid) vid.muted = muted;
+    if (songBus) songBus.gain.value = muted ? 0 : 1;
+  });
 
   // ---- Eingabe: nipplejs + Tastatur ----
   var joy = { x: 0, y: 0 }, keys = {};
@@ -255,7 +279,7 @@
   }
 
   function start() {
-    audio();
+    audio(); stopSong();
     if (!vid.dataset.primed) {
       vid.dataset.primed = '1'; vid.preload = 'auto'; vid.muted = true;
       var pr = vid.play();
@@ -543,6 +567,7 @@
       if (!scored && v >= 1) {
         scored = true; state = 'end'; tt = 0;
         for (var i = 0; i < 6; i++) setTimeout(fireworks, i * 350);
+        startSong();
         setTimeout(playVideo, 2400);
       }
     }
