@@ -2,7 +2,7 @@
   'use strict';
 
   // ---- Einstellungen ----
-  var NAME = 'Armin';              // Name im Endbildschirm
+  var NAME = 'Paps';              // Name im Endbildschirm
   var PHRASE = 'HAPPY BIRTHDAY';   // 13 Buchstaben = 13 Geschenke
   var LETTERS = PHRASE.replace(/ /g, '').split('');
 
@@ -350,9 +350,9 @@
   function showEnd() {
     setTimeout(function () {
       if (state !== 'end') return;
-      titleEl.textContent = 'Happy Birthday, ' + NAME + '!';
-      textEl.innerHTML = 'Hole in one! 🏌️⛳<br>All the best for your day!';
-      startBtn.textContent = 'Play again';
+      titleEl.textContent = 'Happy Birthday ' + NAME + '!';
+      textEl.innerHTML = 'Hole in One! 🏌️⛳<br>Alles Gute zum Geburtstag!';
+      startBtn.textContent = 'Nochmal spielen';
       overlay.classList.remove('hidden');
       overlay.style.background = 'rgba(8, 30, 16, .45)';
     }, 2800);
@@ -401,7 +401,7 @@
       if (state === 'tee' && tt < 1.4) {
         ctx.fillStyle = '#fff'; ctx.font = '800 30px system-ui, sans-serif'; ctx.textAlign = 'center';
         ctx.shadowColor = '#0008'; ctx.shadowBlur = 6;
-        ctx.fillText('Time for the tee shot!', W / 2, H * .22);
+        ctx.fillText('Zeit für den Abschlag!', W / 2, H * .22);
         ctx.shadowBlur = 0;
       }
     }
