@@ -3,8 +3,6 @@
 
   // ---- Einstellungen ----
   var NAME = 'Paps';              // Name im Endbildschirm
-  var PHRASE = 'HAPPY BIRTHDAY';   // 13 Buchstaben = 13 Geschenke
-  var LETTERS = PHRASE.replace(/ /g, '').split('');
 
   var canvas = document.getElementById('c');
   var ctx = canvas.getContext('2d');
@@ -14,6 +12,7 @@
   var startBtn = document.getElementById('start');
   var muteBtn = document.getElementById('mute');
 
+  var fog = document.createElement('canvas'), fctx = fog.getContext('2d');
   var W = 800, H = 450, S = 1, DPR = 1;
   function resize() {
     DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -22,6 +21,7 @@
     canvas.height = Math.round(ph * DPR);
     S = Math.min(pw, ph) / 440;          // Logische Einheiten pro CSS-Pixel
     W = pw / S; H = ph / S;
+    fog.width = canvas.width; fog.height = canvas.height;
     ctx.setTransform(DPR * S, 0, 0, DPR * S, 0, 0);
   }
   window.addEventListener('resize', resize);
@@ -94,38 +94,16 @@
   }
 
   // ---- Zustand ----
-  var state = 'menu';      // menu | play | tee | end
+  var state = 'menu';      // menu | l1 | between | l2 | tee | end
   var tt = 0;              // Zeit im aktuellen Zustand
-  var player, gift, balls, collected, particles, shake, stun, clouds;
+  var particles = [], shake = 0, clouds = [];
+  var M = null;            // aktuelles Labyrinth
+  var ball, player, candles, litTime, exitPos, visited;
 
   function rnd(a, b) { return a + Math.random() * (b - a); }
+  for (var ci = 0; ci < 4; ci++) clouds.push({ x: rnd(0, 800), y: rnd(10, 400), s: rnd(.6, 1.3), v: rnd(4, 10) });
 
-  function newGift() {
-    var tries = 0, g;
-    do {
-      g = { x: rnd(40, W - 40), y: rnd(90, H - 40), t: 0 };
-      tries++;
-    } while (tries < 30 && Math.hypot(g.x - player.x, g.y - player.y) < 140);
-    gift = g;
-  }
-
-  function reset() {
-    player = { x: W / 2, y: H / 2, vx: 0, vy: 0, face: 1, step: 0 };
-    collected = 0; particles = []; shake = 0; stun = 0;
-    balls = [];
-    clouds = [];
-    for (var i = 0; i < 4; i++) clouds.push({ x: rnd(0, W), y: rnd(10, H), s: rnd(.6, 1.3), v: rnd(4, 10) });
-    newGift();
-  }
-
-  function addBall() {
-    var a = rnd(0, 6.28), sp = 70 + balls.length * 10;
-    var edge = Math.random() < .5;
-    balls.push({ x: edge ? -10 : W + 10, y: rnd(100, H - 20), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: 8 });
-    if (balls[balls.length - 1].x < 0) balls[balls.length - 1].vx = Math.abs(balls[balls.length - 1].vx);
-    else balls[balls.length - 1].vx = -Math.abs(balls[balls.length - 1].vx);
-  }
-
+  var CONF = ['#ff595e', '#ffca3a', '#8ac926', '#1982c4', '#6a4c93', '#ffffff'];
   function burst(x, y, n, colors, speed) {
     for (var i = 0; i < n; i++) {
       var a = rnd(0, 6.28), s = rnd(.3, 1) * (speed || 160);
@@ -133,13 +111,134 @@
         c: colors[(Math.random() * colors.length) | 0], r: rnd(2, 4.5), g: 220 });
     }
   }
-  var CONF = ['#ff595e', '#ffca3a', '#8ac926', '#1982c4', '#6a4c93', '#ffffff'];
+
+  // ---- Labyrinth ----
+  // Wandbits: 1=N 2=E 4=S 8=W (gesetzt = offen)
+  var DX = [0, 1, 0, -1], DY = [-1, 0, 1, 0], BIT = [1, 2, 4, 8];
+
+  function genMaze(target, maxC, maxR) {
+    var cols = Math.max(5, Math.min(maxC, Math.floor((W - 20) / target)));
+    var rows = Math.max(5, Math.min(maxR, Math.floor((H - 66) / target)));
+    var cs = Math.min((W - 20) / cols, (H - 66) / rows);
+    var m = { cols: cols, rows: rows, cs: cs, ox: (W - cols * cs) / 2, oy: 56 + (H - 66 - rows * cs) / 2, o: [], rects: [] };
+    var i, n = cols * rows, seen = [];
+    for (i = 0; i < n; i++) { m.o[i] = 0; seen[i] = false; }
+    var stack = [0]; seen[0] = true;
+    while (stack.length) {
+      var cur = stack[stack.length - 1], cx = cur % cols, cy = (cur / cols) | 0, opts = [];
+      for (var d = 0; d < 4; d++) {
+        var nx = cx + DX[d], ny = cy + DY[d];
+        if (nx >= 0 && ny >= 0 && nx < cols && ny < rows && !seen[ny * cols + nx]) opts.push(d);
+      }
+      if (!opts.length) { stack.pop(); continue; }
+      var dd = opts[(Math.random() * opts.length) | 0], nn = (cy + DY[dd]) * cols + cx + DX[dd];
+      m.o[cur] |= BIT[dd]; m.o[nn] |= BIT[(dd + 2) % 4]; seen[nn] = true; stack.push(nn);
+    }
+    // ein paar Wände entfernen, damit es Rundwege gibt
+    for (i = 0; i < n * .1; i++) {
+      var c = (Math.random() * n) | 0, x = c % cols, y = (c / cols) | 0, e = (Math.random() * 4) | 0;
+      var xx = x + DX[e], yy = y + DY[e];
+      if (xx >= 0 && yy >= 0 && xx < cols && yy < rows) { m.o[c] |= BIT[e]; m.o[yy * cols + xx] |= BIT[(e + 2) % 4]; }
+    }
+    // Entfernungen vom Start (Breitensuche)
+    m.dist = []; for (i = 0; i < n; i++) m.dist[i] = -1;
+    var q = [0]; m.dist[0] = 0;
+    while (q.length) {
+      var u = q.shift(), ux = u % cols, uy = (u / cols) | 0;
+      for (var k = 0; k < 4; k++) if (m.o[u] & BIT[k]) {
+        var v = (uy + DY[k]) * cols + ux + DX[k];
+        if (m.dist[v] < 0) { m.dist[v] = m.dist[u] + 1; q.push(v); }
+      }
+    }
+    m.goal = 0; for (i = 0; i < n; i++) if (m.dist[i] > m.dist[m.goal]) m.goal = i;
+    // Lösungsweg
+    m.path = {}; var p = m.goal;
+    while (p !== 0) {
+      m.path[p] = true;
+      var px = p % cols, py = (p / cols) | 0;
+      for (var k2 = 0; k2 < 4; k2++) if (m.o[p] & BIT[k2]) {
+        var w = (py + DY[k2]) * cols + px + DX[k2];
+        if (m.dist[w] === m.dist[p] - 1) { p = w; break; }
+      }
+    }
+    m.path[0] = true;
+    // Wand-Rechtecke
+    var t = 7, R = m.rects;
+    function rect(x1, y1, w1, h1) { R.push({ x: x1, y: y1, w: w1, h: h1 }); }
+    for (i = 0; i < n; i++) {
+      var gx = i % cols, gy = (i / cols) | 0, X = m.ox + gx * cs, Y = m.oy + gy * cs;
+      if (!(m.o[i] & 1)) rect(X - t / 2, Y - t / 2, cs + t, t);
+      if (!(m.o[i] & 8)) rect(X - t / 2, Y - t / 2, t, cs + t);
+      if (gy === rows - 1) rect(X - t / 2, Y + cs - t / 2, cs + t, t);
+      if (gx === cols - 1) rect(X + cs - t / 2, Y - t / 2, t, cs + t);
+    }
+    return m;
+  }
+  function cellCenter(i) { return { x: M.ox + (i % M.cols + .5) * M.cs, y: M.oy + (((i / M.cols) | 0) + .5) * M.cs }; }
+  function cellAt(x, y) {
+    var cx = Math.floor((x - M.ox) / M.cs), cy = Math.floor((y - M.oy) / M.cs);
+    if (cx < 0 || cy < 0 || cx >= M.cols || cy >= M.rows) return -1;
+    return cy * M.cols + cx;
+  }
+  // Kreis gegen Wände; gibt true zurück, wenn berührt (Normale in hitN)
+  var hitN = { x: 0, y: 0 };
+  function collide(o, r) {
+    var hit = false;
+    for (var pass = 0; pass < 2; pass++) {
+      for (var i = 0; i < M.rects.length; i++) {
+        var q = M.rects[i];
+        var cx = Math.max(q.x, Math.min(o.x, q.x + q.w)), cy = Math.max(q.y, Math.min(o.y, q.y + q.h));
+        var dx = o.x - cx, dy = o.y - cy, d2 = dx * dx + dy * dy;
+        if (d2 < r * r) {
+          var d = Math.sqrt(d2);
+          if (d < 0.0001) { dx = 0; dy = -1; d = 0; } else { dx /= d; dy /= d; }
+          o.x += dx * (r - d); o.y += dy * (r - d);
+          hitN.x = dx; hitN.y = dy; hit = true;
+        }
+      }
+    }
+    return hit;
+  }
+
+  // ---- Level aufbauen ----
+  function setupLevel1() {
+    M = genMaze(40, 11, 13);
+    var n = M.cols * M.rows;
+    M.sand = {}; M.water = {};
+    for (var i = 1; i < n; i++) {
+      if (i === M.goal) continue;
+      var r = Math.random();
+      if (!M.path[i] && r < .08) M.water[i] = true;
+      else if (r < .14 + (M.path[i] ? .1 : 0)) M.sand[i] = true;
+    }
+    var s = cellCenter(0);
+    ball = { x: s.x, y: s.y, vx: 0, vy: 0 };
+    state = 'l1'; tt = 0;
+  }
+  function setupLevel2() {
+    M = genMaze(46, 9, 11);
+    var n = M.cols * M.rows, i;
+    var s = cellCenter(0);
+    player = { x: s.x, y: s.y, vx: 0, vy: 0, face: 1, step: 0 };
+    exitPos = cellCenter(M.goal);
+    visited = []; for (i = 0; i < n; i++) visited[i] = false;
+    candles = []; litTime = 0;
+    var tries = 0;
+    while (candles.length < 4 && tries++ < 200) {
+      var c = (Math.random() * n) | 0;
+      if (c === 0 || c === M.goal) continue;
+      var ok = true, pc = cellCenter(c);
+      candles.forEach(function (k) { if (Math.hypot(k.x - pc.x, k.y - pc.y) < M.cs * 3) ok = false; });
+      if (ok) candles.push({ x: pc.x, y: pc.y });
+    }
+    state = 'l2'; tt = 0;
+  }
 
   function start() {
     audio();
-    overlay.classList.add('hidden');
-    reset();
-    state = 'play'; tt = 0;
+    overlay.classList.add('hidden'); overlay.style.background = '';
+    swingHit = landed = scored = false; trail = []; particles = [];
+    setupLevel1();
     tone(523, 0, .12, 'square', .08); tone(659, .1, .12, 'square', .08); tone(784, .2, .2, 'square', .08);
   }
   startBtn.addEventListener('click', start);
@@ -150,94 +249,182 @@
     ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
     ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
   }
-  function drawGrass() {
-    ctx.fillStyle = '#4caf50'; ctx.fillRect(0, 0, W, H);
-    var sw = 60;
-    for (var i = 0; i * sw < W + sw; i++) {
-      if (i % 2) { ctx.fillStyle = 'rgba(255,255,255,.06)'; ctx.fillRect(i * sw, 0, sw, H); }
-    }
-  }
-  function drawGift(g, now) {
-    var bob = Math.sin(now * 5) * 3, p = 1 + Math.sin(now * 8) * .05;
-    ctx.save(); ctx.translate(g.x, g.y + bob); ctx.scale(p, p);
-    ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.beginPath(); ctx.ellipse(0, 18, 16, 5, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = '#e63946'; rr(-16, -14, 32, 30, 4); ctx.fill();
-    ctx.fillStyle = '#ffd23f'; ctx.fillRect(-3, -14, 6, 30); ctx.fillRect(-16, -2, 32, 6);
-    ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.ellipse(-6, -17, 7, 4, -.5, 0, 7); ctx.ellipse(6, -17, 7, 4, .5, 0, 7); ctx.fill();
-    ctx.restore();
-    // Glitzern
-    ctx.fillStyle = '#fff';
-    for (var i = 0; i < 3; i++) {
-      var a = now * 2 + i * 2.1;
-      ctx.globalAlpha = .5 + .5 * Math.sin(now * 6 + i);
-      ctx.fillRect(g.x + Math.cos(a) * 26 - 1.5, g.y + Math.sin(a) * 22 - 1.5, 3, 3);
-    }
-    ctx.globalAlpha = 1;
-  }
-  function drawGolferTop(p, now) {
-    ctx.save(); ctx.translate(p.x, p.y);
+  function drawGolferTop(p, now, scale) {
+    ctx.save(); ctx.translate(p.x, p.y); ctx.scale(scale, scale);
     var bounce = Math.abs(Math.sin(p.step)) * 3;
     ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(0, 16, 13, 5, 0, 0, 7); ctx.fill();
-    if (stun > 0 && Math.floor(now * 20) % 2) ctx.globalAlpha = .4;
     ctx.translate(0, -bounce);
-    ctx.fillStyle = '#1d3557'; rr(-9, -2, 18, 20, 5); ctx.fill();          // Körper
-    ctx.fillStyle = '#f1c27d'; ctx.beginPath(); ctx.arc(0, -10, 9, 0, 7); ctx.fill();   // Kopf
-    ctx.fillStyle = '#e63946'; ctx.beginPath(); ctx.arc(0, -13, 9.5, Math.PI, 0); ctx.fill();   // Kappe
+    ctx.fillStyle = '#1d3557'; rr(-9, -2, 18, 20, 5); ctx.fill();
+    ctx.fillStyle = '#f1c27d'; ctx.beginPath(); ctx.arc(0, -10, 9, 0, 7); ctx.fill();
+    ctx.fillStyle = '#e63946'; ctx.beginPath(); ctx.arc(0, -13, 9.5, Math.PI, 0); ctx.fill();
     ctx.fillRect(p.face > 0 ? 0 : -14, -14, 14, 3);
     ctx.fillStyle = '#222'; ctx.fillRect(p.face * 3 - 1, -10, 2, 3);
     ctx.restore();
   }
-  function drawHud(now) {
-    var n = LETTERS.length, label = PHRASE, idx = 0;
-    ctx.font = '700 22px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    var cw = Math.min(22, (W - 70) / (label.length + 1)), x0 = W / 2 - label.length * cw / 2 + cw / 2;
-    ctx.fillStyle = 'rgba(0,0,0,.35)'; rr(x0 - cw, 10, label.length * cw + cw, 36, 18); ctx.fill();
-    for (var i = 0; i < label.length; i++) {
-      var ch = label[i];
-      if (ch === ' ') continue;
-      idx = label.slice(0, i).replace(/ /g, '').length;
-      ctx.fillStyle = idx < collected ? '#ffd23f' : 'rgba(255,255,255,.3)';
-      ctx.font = '700 ' + Math.floor(cw * .95) + 'px system-ui, sans-serif';
-      ctx.fillText(ch, x0 + i * cw, 29);
-    }
+  function drawMaze(floor, wall, wallTop) {
+    ctx.fillStyle = floor; ctx.fillRect(M.ox, M.oy, M.cols * M.cs, M.rows * M.cs);
+    return;
   }
-
-  // ---- Spielupdate ----
-  function updatePlay(dt, now) {
-    var inp = input(), sp = stun > 0 ? 60 : 190;
-    player.vx += (inp.x * sp - player.vx) * Math.min(1, dt * 12);
-    player.vy += (inp.y * sp - player.vy) * Math.min(1, dt * 12);
-    player.x = Math.max(16, Math.min(W - 16, player.x + player.vx * dt));
-    player.y = Math.max(40, Math.min(H - 16, player.y + player.vy * dt));
-    if (Math.abs(inp.x) > .1) player.face = inp.x > 0 ? 1 : -1;
-    if (Math.hypot(player.vx, player.vy) > 20) player.step += dt * 14;
-    if (stun > 0) stun -= dt;
-    if (shake > 0) shake -= dt;
-
-    // Geschenk einsammeln
-    if (Math.hypot(player.x - gift.x, player.y - gift.y) < 28) {
-      collected++;
-      burst(gift.x, gift.y, 24, CONF, 190);
-      tone(660 + collected * 40, 0, .12, 'square', .09); tone(990 + collected * 40, .08, .15, 'square', .09);
-      if (collected % 3 === 0 && collected < LETTERS.length) addBall();
-      if (collected >= LETTERS.length) { gift = null; state = 'tee'; tt = 0; return; }
-      newGift();
-    }
-    // Golfbälle als Hindernisse
-    balls.forEach(function (b) {
-      b.x += b.vx * dt; b.y += b.vy * dt;
-      if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx); }
-      if (b.x > W - b.r) { b.x = W - b.r; b.vx = -Math.abs(b.vx); }
-      if (b.y < 52) { b.y = 52; b.vy = Math.abs(b.vy); }
-      if (b.y > H - b.r) { b.y = H - b.r; b.vy = -Math.abs(b.vy); }
-      if (stun <= 0 && Math.hypot(player.x - b.x, player.y - b.y) < b.r + 12) {
-        stun = 1.2; shake = .25;
-        var d = Math.hypot(player.x - b.x, player.y - b.y) || 1;
-        player.vx = (player.x - b.x) / d * 260; player.vy = (player.y - b.y) / d * 260;
-        tone(140, 0, .2, 'sawtooth', .12);
-      }
+  function drawWalls(color, top) {
+    M.rects.forEach(function (q) {
+      ctx.fillStyle = color; ctx.fillRect(q.x, q.y, q.w, q.h);
+      ctx.fillStyle = top; ctx.fillRect(q.x, q.y, q.w, Math.min(2, q.h)); // dünne Lichtkante
     });
   }
+  function drawHud(label) {
+    ctx.font = '700 18px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    var w = 150;
+    ctx.fillStyle = 'rgba(0,0,0,.4)'; rr(W / 2 - w / 2, 12, w, 32, 16); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.fillText(label, W / 2, 29);
+  }
+  function drawToast(msg, sub) {
+    var a = tt < .3 ? tt / .3 : tt > 3 ? Math.max(0, 1 - (tt - 3) / .6) : 1;
+    if (a <= 0) return;
+    ctx.globalAlpha = a;
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; rr(W / 2 - 170, H - 100, 340, 62, 14); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '800 20px system-ui, sans-serif'; ctx.fillText(msg, W / 2, H - 80);
+    ctx.font = '500 15px system-ui, sans-serif'; ctx.fillText(sub, W / 2, H - 56);
+    ctx.globalAlpha = 1;
+  }
+
+  // ---- Level 1: Golfball-Labyrinth ----
+  var splash = 0;
+  function updateL1(dt) {
+    var inp = input(), c = cellAt(ball.x, ball.y);
+    var onSand = c >= 0 && M.sand[c];
+    ball.vx += inp.x * 560 * dt; ball.vy += inp.y * 560 * dt;
+    var f = Math.exp(-dt * (onSand ? 5.5 : 1.1));
+    ball.vx *= f; ball.vy *= f;
+    var sp = Math.hypot(ball.vx, ball.vy), max = onSand ? 90 : 200;
+    if (sp > max) { ball.vx *= max / sp; ball.vy *= max / sp; }
+    ball.x += ball.vx * dt; ball.y += ball.vy * dt;
+    if (collide(ball, 8)) {
+      var vn = ball.vx * hitN.x + ball.vy * hitN.y;
+      if (vn < 0) {
+        ball.vx -= 1.5 * vn * hitN.x; ball.vy -= 1.5 * vn * hitN.y;
+        if (-vn > 60) tone(300 + Math.random() * 60, 0, .05, 'square', .04);
+      }
+    }
+    c = cellAt(ball.x, ball.y);
+    if (c >= 0 && M.water[c]) {
+      var cc = cellCenter(c);
+      if (Math.hypot(ball.x - cc.x, ball.y - cc.y) < M.cs * .3) {
+        burst(ball.x, ball.y, 18, ['#8ecae6', '#ffffff', '#219ebc'], 120);
+        noise(.2, .25); tone(220, 0, .25, 'sine', .1);
+        var s = cellCenter(0); ball.x = s.x; ball.y = s.y; ball.vx = ball.vy = 0;
+      }
+    }
+    var g = cellCenter(M.goal);
+    if (Math.hypot(ball.x - g.x, ball.y - g.y) < 10) {
+      burst(g.x, g.y, 40, CONF, 220); tone(784, 0, .15, 'square', .1); tone(1047, .12, .25, 'square', .1);
+      state = 'between'; tt = 0;
+    }
+  }
+  function drawL1(now) {
+    ctx.fillStyle = '#2f7a3e'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#7ec26f'; ctx.fillRect(M.ox, M.oy, M.cols * M.cs, M.rows * M.cs);
+    for (var i = 0; i < M.cols * M.rows; i++) {
+      var ctr = cellCenter(i), cs = M.cs;
+      if ((i % M.cols + ((i / M.cols) | 0)) % 2) { ctx.fillStyle = 'rgba(255,255,255,.07)'; ctx.fillRect(ctr.x - cs / 2, ctr.y - cs / 2, cs, cs); }
+      if (M.sand[i]) {
+        ctx.fillStyle = '#e6cf8a'; rr(ctr.x - cs * .42, ctr.y - cs * .42, cs * .84, cs * .84, 10); ctx.fill();
+        ctx.fillStyle = '#c9b06a';
+        for (var d = 0; d < 6; d++) ctx.fillRect(ctr.x + Math.sin(i * 7 + d * 2.3) * cs * .3, ctr.y + Math.cos(i * 3 + d * 1.7) * cs * .3, 2, 2);
+      }
+      if (M.water[i]) {
+        ctx.fillStyle = '#3a9bd9'; ctx.beginPath(); ctx.ellipse(ctr.x, ctr.y, cs * .34, cs * .28, 0, 0, 7); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 1.5; ctx.beginPath();
+        ctx.ellipse(ctr.x, ctr.y, cs * (.14 + .06 * Math.sin(now * 3 + i)), cs * .1, 0, 0, 7); ctx.stroke();
+      }
+    }
+    // Start-Markierung + Loch + Fahne
+    var s = cellCenter(0);
+    ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.arc(s.x, s.y, 12, 0, 7); ctx.fill();
+    var g = cellCenter(M.goal);
+    ctx.fillStyle = '#12301a'; ctx.beginPath(); ctx.arc(g.x, g.y, 11, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(g.x, g.y); ctx.lineTo(g.x, g.y - 30); ctx.stroke();
+    ctx.fillStyle = '#ff595e'; ctx.beginPath(); ctx.moveTo(g.x, g.y - 30); ctx.lineTo(g.x + 16, g.y - 25 + Math.sin(now * 6) * 1.5); ctx.lineTo(g.x, g.y - 20); ctx.fill();
+    drawWalls('#1f5a2a', '#3e8d4c');
+    // Ball
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(ball.x + 2, ball.y + 5, 8, 4, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ball.x, ball.y, 8, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ddd'; ctx.beginPath(); ctx.arc(ball.x - 2, ball.y - 2, 1.3, 0, 7); ctx.arc(ball.x + 2, ball.y + 1, 1.3, 0, 7); ctx.fill();
+    drawHud('Level 1 von 2');
+    drawToast('Bring den Ball ins Loch!', 'Sand bremst, Wasser wirft dich zurück.');
+  }
+
+  // ---- Level 2: Dunkles Labyrinth ----
+  function updateL2(dt) {
+    var inp = input();
+    player.vx += (inp.x * 140 - player.vx) * Math.min(1, dt * 12);
+    player.vy += (inp.y * 140 - player.vy) * Math.min(1, dt * 12);
+    player.x += player.vx * dt; player.y += player.vy * dt;
+    collide(player, 9);
+    if (Math.abs(inp.x) > .1) player.face = inp.x > 0 ? 1 : -1;
+    if (Math.hypot(player.vx, player.vy) > 20) player.step += dt * 14;
+    if (litTime > 0) litTime -= dt;
+    var lr = lightRadius();
+    for (var i = 0; i < M.cols * M.rows; i++) {
+      if (visited[i]) continue;
+      var c = cellCenter(i);
+      if (Math.hypot(c.x - player.x, c.y - player.y) < lr * .7) visited[i] = true;
+    }
+    for (var k = candles.length - 1; k >= 0; k--) {
+      if (Math.hypot(player.x - candles[k].x, player.y - candles[k].y) < 16) {
+        burst(candles[k].x, candles[k].y, 16, ['#ffd23f', '#ff9f1c', '#ffffff'], 120);
+        tone(880, 0, .1, 'triangle', .1); tone(1320, .08, .2, 'triangle', .1);
+        candles.splice(k, 1); litTime = 7;
+      }
+    }
+    if (Math.hypot(player.x - exitPos.x, player.y - exitPos.y) < 16) {
+      burst(exitPos.x, exitPos.y, 40, CONF, 220); tone(784, 0, .15, 'square', .1); tone(1047, .12, .25, 'square', .1);
+      state = 'tee'; tt = 0; fadeIn = 0;
+    }
+  }
+  function lightRadius() { return litTime > 0 ? 150 : 85; }
+  function drawL2(now) {
+    ctx.fillStyle = '#10241a'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#2a4a33'; ctx.fillRect(M.ox, M.oy, M.cols * M.cs, M.rows * M.cs);
+    // Ausgang (Tür)
+    var e = exitPos;
+    ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(e.x, e.y - 4, 13, Math.PI, 0); ctx.fillRect(e.x - 13, e.y - 4, 26, 16); ctx.fill();
+    ctx.fillStyle = '#7a4b12'; ctx.beginPath(); ctx.arc(e.x, e.y - 3, 9, Math.PI, 0); ctx.fillRect(e.x - 9, e.y - 3, 18, 15); ctx.fill();
+    ctx.fillStyle = '#ffd23f'; ctx.fillRect(e.x + 3, e.y + 4, 3, 3);
+    drawWalls('#143d22', '#2f7a46');
+    candles.forEach(function (c) {
+      ctx.fillStyle = '#fff4d6'; ctx.fillRect(c.x - 3, c.y - 2, 6, 14);
+      var fl = 1 + Math.sin(now * 12 + c.x) * .15;
+      ctx.fillStyle = '#ff9f1c'; ctx.beginPath(); ctx.ellipse(c.x, c.y - 7, 3.5 * fl, 6 * fl, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = '#ffe066'; ctx.beginPath(); ctx.ellipse(c.x, c.y - 6, 1.6, 3.5 * fl, 0, 0, 7); ctx.fill();
+    });
+    drawGolferTop(player, now, .9);
+
+    // Dunkelheit
+    fctx.setTransform(1, 0, 0, 1, 0, 0);
+    fctx.globalCompositeOperation = 'source-over';
+    fctx.clearRect(0, 0, fog.width, fog.height);
+    fctx.fillStyle = 'rgba(4,7,14,.95)'; fctx.fillRect(0, 0, fog.width, fog.height);
+    fctx.setTransform(DPR * S, 0, 0, DPR * S, 0, 0);
+    fctx.globalCompositeOperation = 'destination-out';
+    fctx.fillStyle = 'rgba(0,0,0,.6)';
+    for (var i = 0; i < visited.length; i++) if (visited[i]) {
+      var c = cellCenter(i); fctx.fillRect(c.x - M.cs / 2, c.y - M.cs / 2, M.cs, M.cs);
+    }
+    function glow(x, y, r, a) {
+      var g = fctx.createRadialGradient(x, y, r * .15, x, y, r);
+      g.addColorStop(0, 'rgba(0,0,0,' + a + ')'); g.addColorStop(1, 'rgba(0,0,0,0)');
+      fctx.fillStyle = g; fctx.beginPath(); fctx.arc(x, y, r, 0, 7); fctx.fill();
+    }
+    glow(player.x, player.y, lightRadius() + Math.sin(now * 9) * 1.5, 1);
+    glow(e.x, e.y, 30 + Math.sin(now * 3) * 4, .55);
+    candles.forEach(function (c) { glow(c.x, c.y, 26, .8); });
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(fog, 0, 0); ctx.restore();
+
+    drawHud('Level 2 von 2');
+    drawToast('Finde den Ausgang im Dunkeln!', 'Kerzen machen kurz mehr Licht.');
+  }
+  var fadeIn = 0;
 
   // ---- Abschlag-Szene ----
   var T_TEE = { stand: 1.4, back: 1.1, down: 0.22, fly: 3.2, roll: 1.1 };
@@ -357,7 +544,6 @@
       overlay.style.background = 'rgba(8, 30, 16, .45)';
     }, 2800);
   }
-  startBtn.addEventListener('click', function () { overlay.style.background = ''; swingHit = landed = scored = false; trail = []; });
 
   // ---- Hauptschleife ----
   var last = performance.now(), clock = 0;
@@ -366,35 +552,33 @@
     var now = clock;
 
     ctx.save();
-    if (shake > 0) ctx.translate(rnd(-3, 3), rnd(-3, 3));
+    if (shake > 0) { shake -= dt; ctx.translate(rnd(-3, 3), rnd(-3, 3)); }
 
     if (state === 'menu') {
       drawSky(now);
       var L0 = teeLayout(); drawCourse(L0); drawFlag(L0, now);
       drawGolferSide(L0, Math.atan2(40, 36) + Math.sin(now * 2) * .05, now);
       ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(L0.gx + (10 + Math.sin(Math.atan2(40, 36)) * 54) * L0.s, L0.gy - 4 * L0.s, 5, 0, 7); ctx.fill();
-    } else if (state === 'play') {
-      updatePlay(dt, now);
-      drawGrass();
-      if (gift) drawGift(gift, now);
-      balls.forEach(function (b) {
-        ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.beginPath(); ctx.ellipse(b.x + 2, b.y + 6, b.r, 3, 0, 0, 7); ctx.fill();
-        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 7); ctx.fill();
-        ctx.fillStyle = '#ddd'; ctx.beginPath(); ctx.arc(b.x - 2, b.y - 2, 1.4, 0, 7); ctx.arc(b.x + 2, b.y + 1, 1.4, 0, 7); ctx.fill();
-      });
-      drawGolferTop(player, now);
-      drawHud(now);
-    } else {
+    } else if (state === 'l1') {
+      updateL1(dt); drawL1(now);
+    } else if (state === 'between') {
+      drawL1(now);
+      ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = '800 32px system-ui, sans-serif'; ctx.fillText('Level 1 geschafft!', W / 2, H / 2);
+      if (tt > 1.6) setupLevel2();
+    } else if (state === 'l2') {
+      updateL2(dt); if (state === 'l2') drawL2(now);
+    }
+    if (state === 'tee' || state === 'end') {
       var r = updateTee(dt, now), L = r.L;
       drawSky(now); drawCourse(L); drawFlag(L, now);
-      // Spur
       trail.forEach(function (p) {
         p.a -= dt * .6;
         if (p.a > 0) { ctx.globalAlpha = p.a; ctx.fillStyle = CONF[(p.x | 0) % CONF.length]; ctx.beginPath(); ctx.arc(p.x, p.y, 3.2, 0, 7); ctx.fill(); }
       });
       ctx.globalAlpha = 1;
       drawGolferSide(L, r.theta, now);
-      // Tee + Ball
       if (tt < r.tFly) { ctx.fillStyle = '#e8d3a2'; ctx.fillRect(ballPos.x - 1.5, L.gy - 2 * L.s, 3, 2 * L.s); }
       ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ballPos.x, ballPos.y - 4, 5.5, 0, 7); ctx.fill();
       ctx.strokeStyle = '#0003'; ctx.lineWidth = 1; ctx.stroke();
@@ -406,7 +590,6 @@
       }
     }
 
-    // Partikel
     for (var i = particles.length - 1; i >= 0; i--) {
       var p = particles[i]; p.age += dt;
       if (p.age > p.life) { particles.splice(i, 1); continue; }
@@ -419,7 +602,5 @@
     requestAnimationFrame(frame);
   }
 
-  reset();
-  // Hintergrund im Menü braucht Wolken
   requestAnimationFrame(frame);
 })();
